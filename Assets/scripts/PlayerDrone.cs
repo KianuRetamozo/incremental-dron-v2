@@ -193,26 +193,40 @@ public class PlayerDrone : MonoBehaviour
         }
     }
 
+    readonly HashSet<TrashItem> atraidosEsteFrame = new HashSet<TrashItem>();
+
     void RecogerBasuraAutomatica()
     {
         Collider[] objetosCercanos = Physics.OverlapSphere(transform.position, GameManager.Instance.radioAspiracion);
+        atraidosEsteFrame.Clear();
 
         foreach (Collider col in objetosCercanos)
         {
             if (col == null || !col.CompareTag("Trash")) continue;
             if (inventario.Count >= GameManager.Instance.capacidadDron) break;
 
-            // Atrae suavemente el desecho hacia el dron
-            col.transform.position = Vector3.MoveTowards(
-                col.transform.position,
+            // Se mueve la RAÍZ del objeto (no un collider hijo) y solo una vez por frame
+            TrashItem item = col.GetComponentInParent<TrashItem>();
+            GameObject objetivo = item != null ? item.gameObject : col.gameObject;
+            if (item != null)
+            {
+                if (item.recogido || !atraidosEsteFrame.Add(item)) continue;
+            }
+
+            // Si tiene física, se vuelve cinemático para que la gravedad no pelee con el imán
+            Rigidbody rb = objetivo.GetComponent<Rigidbody>();
+            if (rb != null && !rb.isKinematic) rb.isKinematic = true;
+
+            objetivo.transform.position = Vector3.MoveTowards(
+                objetivo.transform.position,
                 transform.position,
                 velocidadAtraccionIman * Time.deltaTime
             );
 
             // Al llegar cerca, lo guarda en el inventario
-            if (Vector3.Distance(col.transform.position, transform.position) <= distanciaCapturaIman)
+            if (Vector3.Distance(objetivo.transform.position, transform.position) <= distanciaCapturaIman)
             {
-                RecogerObjeto(col.gameObject);
+                RecogerObjeto(objetivo);
             }
         }
     }
@@ -220,12 +234,20 @@ public class PlayerDrone : MonoBehaviour
     void RecogerObjeto(GameObject basura)
     {
         if (basura == null) return;
+        if (inventario.Count >= GameManager.Instance.capacidadDron) return;
 
         TrashItem item = basura.GetComponentInParent<TrashItem>();
+        if (item != null)
+        {
+            if (item.recogido) return;
+            item.recogido = true;
+        }
+
         TipoBasura tipo = item != null ? item.tipo : TipoBasura.Plastico;
+        GameObject raiz = item != null ? item.gameObject : basura;
 
         inventario.Add(tipo);
-        Destroy(basura);
+        Destroy(raiz);
 
         ContarMateriales(out int p, out int m, out int v);
         GameManager.Instance.ActualizarCargaHUD(inventario.Count, p, m, v);

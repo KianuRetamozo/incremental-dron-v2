@@ -9,9 +9,14 @@ using TMPro;
 // simplemente borra las dos barras "//" de la línea de abajo:
 // public enum TipoBasura { Plastico, Metal, Vidrio }
 
+public enum TipoMejora { Bodega, Propulsores, Aspiradora, Logistica }
+
 public class GameManager : MonoBehaviour
 {
     public static GameManager Instance { get; private set; }
+
+    /// <summary>Se dispara cada vez que cambia algo que la interfaz debe redibujar.</summary>
+    public event System.Action OnEstadoCambiado;
 
     [System.Serializable]
     public struct NivelMejora
@@ -72,11 +77,32 @@ public class GameManager : MonoBehaviour
     public TextMeshProUGUI txtMejoraLogistica;
     public TextMeshProUGUI txtRecursosEnTerminal; // Opcional
 
+    [Header("8. Interfaz Procedural (InterfazJuego.cs)")]
+    [Tooltip("Si está activo, la interfaz (menú, HUD, pausa, mejoras, victoria) se construye por código " +
+             "con los sprites de Resources/UI y reemplaza el Canvas antiguo de la escena.")]
+    public bool usarInterfazProcedural = true;
+    public TextMeshProUGUI txtPlastico;   // Contadores individuales del HUD (opcionales)
+    public TextMeshProUGUI txtMetal;
+    public TextMeshProUGUI txtVidrio;
+    public Image barraCarga;              // Relleno (Filled) de la carga del dron
+
     // Estados internos
     private bool enMenuPrincipal = true;
     private bool enPausa = false;
     private bool enMejoras = false;
     private bool victoriaAlcanzada = false;
+    private bool enVictoria = false;
+
+    // Lectura de estado para la interfaz
+    public bool EnMenuPrincipal => enMenuPrincipal;
+    public bool EnPausa => enPausa;
+    public bool EnMejoras => enMejoras;
+    public int CargaActual => cargaTotalActual;
+    public int CargaP => cargaP;
+    public int CargaM => cargaM;
+    public int CargaV => cargaV;
+    public float PorcentajeRestauracion => metaReciclajeTotal > 0
+        ? Mathf.Clamp01((float)totalReciclado / metaReciclajeTotal) : 0f;
 
     // Estado de carga actual del dron (para refrescar HUD al mejorar bodega)
     private int cargaTotalActual = 0;
@@ -84,7 +110,7 @@ public class GameManager : MonoBehaviour
     private Coroutine corrutinaFeedback;
 
     // Propiedades que lee PlayerDrone.cs
-    public bool EstaJugando => !enMenuPrincipal && !enPausa && !enMejoras;
+    public bool EstaJugando => !enMenuPrincipal && !enPausa && !enMejoras && !enVictoria;
     public bool EsRecoleccionAutomatica => nivelAspiradora >= 1;
     public bool TieneTurbo => nivelPropulsores >= 2;
     public float MultiplicadorTurbo => nivelPropulsores >= 3 ? 1.45f : 1.25f;
@@ -120,11 +146,22 @@ public class GameManager : MonoBehaviour
     void Awake()
     {
         if (Instance == null) Instance = this;
-        else Destroy(gameObject);
+        else { Destroy(gameObject); return; }
+
+        // La escena guardaba valores de una versión anterior (vel. 4, radio 1.5). Las tablas de mejoras
+        // están calculadas sobre estas estadísticas base, así que se normalizan al iniciar.
+        capacidadDron = 3;
+        velocidadDron = 7f;
+        radioAspiracion = 1.8f;
+        nivelBodega = nivelPropulsores = nivelAspiradora = nivelLogistica = 0;
+        Time.timeScale = 1f;
     }
 
     void Start()
     {
+        // Reemplaza el Canvas antiguo por la interfaz con sprites y la conecta a este GameManager
+        if (usarInterfazProcedural) InterfazJuego.Construir(this);
+
         // Oculta las fases del bosque al iniciar
         if (fasesBosque != null)
         {
@@ -160,7 +197,7 @@ public class GameManager : MonoBehaviour
 
     void Update()
     {
-        if (Keyboard.current == null || enMenuPrincipal) return;
+        if (Keyboard.current == null || enMenuPrincipal || enVictoria) return;
 
         if (Keyboard.current.escapeKey.wasPressedThisFrame)
         {
@@ -205,6 +242,13 @@ public class GameManager : MonoBehaviour
         {
             txtCarga.text = $"Carga: {cargaTotalActual}/{capacidadDron}  (P:{cargaP} M:{cargaM} V:{cargaV})";
         }
+
+        if (barraCarga != null)
+        {
+            barraCarga.fillAmount = capacidadDron > 0 ? Mathf.Clamp01((float)cargaTotalActual / capacidadDron) : 0f;
+        }
+
+        OnEstadoCambiado?.Invoke();
     }
 
     void ActualizarFasesBosque()
@@ -225,8 +269,21 @@ public class GameManager : MonoBehaviour
         {
             victoriaAlcanzada = true;
             MostrarFeedback("¡Parque 100% restaurado! Objetivo ODS 15 completado", 4f);
-            if (panelVictoria != null) panelVictoria.SetActive(true);
+            if (panelVictoria != null)
+            {
+                enVictoria = true;
+                panelVictoria.SetActive(true);
+                ConfigurarCursorYPausa(true);
+            }
         }
+    }
+
+    /// <summary>Cierra el panel de victoria y sigue jugando (el parque ya está restaurado).</summary>
+    public void BotonContinuarTrasVictoria()
+    {
+        enVictoria = false;
+        if (panelVictoria != null) panelVictoria.SetActive(false);
+        ConfigurarCursorYPausa(false);
     }
 
     public void ActualizarUI()
@@ -235,6 +292,10 @@ public class GameManager : MonoBehaviour
         {
             txtPuntosInventario.text = $"Plástico: {plastico}  |  Metal: {metal}  |  Vidrio: {vidrio}";
         }
+
+        if (txtPlastico != null) txtPlastico.text = plastico.ToString();
+        if (txtMetal != null) txtMetal.text = metal.ToString();
+        if (txtVidrio != null) txtVidrio.text = vidrio.ToString();
 
         ActualizarCargaHUD(cargaTotalActual, cargaP, cargaM, cargaV);
 
@@ -290,6 +351,58 @@ public class GameManager : MonoBehaviour
         }
     }
 
+    // ---- API genérica por tipo (la usa la interfaz con sprites) ----
+
+    NivelMejora[] TablaDe(TipoMejora t)
+    {
+        switch (t)
+        {
+            case TipoMejora.Bodega: return tablaBodega;
+            case TipoMejora.Propulsores: return tablaPropulsores;
+            case TipoMejora.Aspiradora: return tablaAspiradora;
+            default: return tablaLogistica;
+        }
+    }
+
+    public int NivelDe(TipoMejora t)
+    {
+        switch (t)
+        {
+            case TipoMejora.Bodega: return nivelBodega;
+            case TipoMejora.Propulsores: return nivelPropulsores;
+            case TipoMejora.Aspiradora: return nivelAspiradora;
+            default: return nivelLogistica;
+        }
+    }
+
+    public int NivelMaximoDe(TipoMejora t) => TablaDe(t).Length;
+
+    /// <summary>Datos del siguiente nivel. Devuelve false si la mejora ya está al máximo.</summary>
+    public bool TryGetSiguienteNivel(TipoMejora t, out NivelMejora siguiente)
+    {
+        NivelMejora[] tabla = TablaDe(t);
+        int nivel = NivelDe(t);
+        if (nivel >= tabla.Length) { siguiente = default; return false; }
+        siguiente = tabla[nivel];
+        return true;
+    }
+
+    public bool PuedeComprar(TipoMejora t)
+    {
+        return TryGetSiguienteNivel(t, out NivelMejora s) && TieneRecursos(s);
+    }
+
+    public void Comprar(TipoMejora t)
+    {
+        switch (t)
+        {
+            case TipoMejora.Bodega: ComprarMejoraBodega(); break;
+            case TipoMejora.Propulsores: ComprarMejoraPropulsores(); break;
+            case TipoMejora.Aspiradora: ComprarMejoraAspiradora(); break;
+            default: ComprarMejoraLogistica(); break;
+        }
+    }
+
     bool IntentarComprar(NivelMejora[] tabla, ref int nivelActual, out NivelMejora mejora)
     {
         mejora = default;
@@ -333,6 +446,8 @@ public class GameManager : MonoBehaviour
         {
             txtRecursosEnTerminal.text = $"Disponible — Plástico: {plastico} | Metal: {metal} | Vidrio: {vidrio}";
         }
+
+        OnEstadoCambiado?.Invoke();
     }
 
     void RefrescarBoton(Button btn, TextMeshProUGUI txt, NivelMejora[] tabla, int nivelActual, string textoMax)
