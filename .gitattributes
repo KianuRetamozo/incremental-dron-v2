@@ -169,3 +169,6 @@ Packages/packages-lock.json linguist-generated
 
 # Exceptions for .asset files such as lightning pre-baking
 LightingData.asset     binary
+
+# Sprites de la interfaz (muy pequenos): se guardan como archivos normales, sin LFS
+Assets/Resources/UI/*.png -filter -diff -merge -text
